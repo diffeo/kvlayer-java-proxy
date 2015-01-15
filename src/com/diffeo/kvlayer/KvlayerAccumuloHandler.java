@@ -1,11 +1,14 @@
 package com.diffeo.kvlayer;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.net.Socket;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 
 import org.apache.accumulo.core.client.AccumuloException;
 import org.apache.accumulo.core.client.AccumuloSecurityException;
@@ -20,6 +23,9 @@ import org.apache.accumulo.core.client.TableNotFoundException;
 import org.apache.accumulo.core.client.ZooKeeperInstance;
 import org.apache.accumulo.core.client.admin.TableOperations;
 import org.apache.accumulo.core.client.security.tokens.PasswordToken;
+import org.apache.accumulo.core.conf.AccumuloConfiguration;
+import org.apache.accumulo.core.conf.ConfigurationCopy;
+import org.apache.accumulo.core.conf.Property;
 import org.apache.accumulo.core.data.Key;
 import org.apache.accumulo.core.data.Mutation;
 import org.apache.accumulo.core.data.Range;
@@ -63,14 +69,81 @@ public class KvlayerAccumuloHandler extends CborClientHandler implements RpcHand
 	// What was set in "setup_namespace"
 	HashMap<String, Object> tableOpts = new HashMap<String, Object>();
 
+	/**
+	 * Because ZooKeeperInstance.getConnector() can hang forever, run it in a thread that we can kill when we decide to timeout.
+	 * @author bolson
+	 *
+	 */
+	public static class ConnectThread implements Runnable {
+		public Connector cn = null;
+		public String user;
+		public String password;
+		public ZooKeeperInstance zki;
+		public Exception err = null;
+
+		public ConnectThread(ZooKeeperInstance zki, String user, String password) {
+			this.zki = zki;
+			this.user = user;
+			this.password = password;
+		}
+
+		public void run() {
+			try {
+				cn = zki.getConnector(user, new PasswordToken(password));
+			} catch (AccumuloException e) {
+				logger.error("error connecting to accumulo");
+				e.printStackTrace();
+				err = e;
+			} catch (AccumuloSecurityException e) {
+				logger.error("error connecting to accumulo");
+				e.printStackTrace();
+				err = e;
+			}
+			synchronized(this) {
+				this.notify();
+			}
+		}
+	}
+
 	Object connect(List<Object> params) throws AccumuloException, AccumuloSecurityException {
 		String zkMasterAddress = (String) params.get(0);
 		String user = (String) params.get(1);
 		String password = (String) params.get(2);
 		zki = new ZooKeeperInstance("accumulo", zkMasterAddress);
+		ConfigurationCopy conf = new ConfigurationCopy(zki.getConfiguration());
+		conf.set(Property.GENERAL_RPC_TIMEOUT, "10s"); // default 120s
+		zki.setConfiguration(conf);
+		for (Entry<String, String> x : conf) {
+			logger.debug("conf: " + x.getKey() + " : " + x.getValue());
+		}
 
-		connector = zki.getConnector(user, new PasswordToken(password));
-		return new Boolean(connector != null);
+		// this can hang forever. Put in a thread that can be killed.
+		//connector = zki.getConnector(user, new PasswordToken(password));
+		ConnectThread ct = new ConnectThread(zki, user, password);
+		Thread ctt = new Thread(ct);
+		ctt.start();
+		try {
+			synchronized(ct) {
+				ct.wait(10000); // 10s
+			}
+		} catch (InterruptedException e) {
+			logger.error("interrupted waiting for accumulo zki connect");
+			e.printStackTrace();
+			return new Object[]{false,"interrupted waiting for accumulo zki connect"};
+		}
+		if (ct.cn == null) {
+			ctt.interrupt();
+			String msg = "no connection (timeout)";
+			if (ct.err != null) {
+				StringWriter sw = new StringWriter();
+				PrintWriter pw = new PrintWriter(sw);
+				ct.err.printStackTrace(pw);
+				msg = msg + ":\n" + sw.toString();
+			}
+			return new Object[]{false,msg};
+		}
+		connector = ct.cn;
+		return new Object[]{true, null};
 	}
 	
 	@Override
