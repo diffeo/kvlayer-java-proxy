@@ -1,0 +1,35 @@
+#!/usr/bin/python
+#
+# Script to run kvlayer-java-proxy.
+# first:
+#  mvn package
+#
+
+import glob
+import os
+import sys
+
+
+def main():
+    installdir = os.path.dirname(os.path.abspath(__file__))
+    # TODO: sort and get the latest version if multiple appear
+    corejar = glob.glob(os.path.join(installdir, 'target', 'kvlayer-cbor-proxy*.jar'))
+    assert len(corejar) == 1, 'got multiple versions of core jar: {!r}'.format(corjar)
+    dependjars = glob.glob(os.path.join(installdir, 'target', 'dependency', '*.jar'))
+    
+    jars = dependjars + corejar
+
+    env = dict(os.environ)
+    cp = env.get('CLASSPATH')
+    if cp:
+        jars.insert(0, cp)
+
+    env['CLASSPATH'] = ':'.join(jars)
+
+    cmd = ['java', 'com.diffeo.kvlayer.KvlayerAccumuloHandler'] + sys.argv[1:]
+    #sys.stderr.write(repr(cmd) + '\n')
+    os.execvpe('java', cmd, env)
+
+
+if __name__ == '__main__':
+    main()
