@@ -109,7 +109,8 @@ public class KvlayerAccumuloHandler extends CborClientHandler implements RpcHand
 		String zkMasterAddress = (String) params.get(0);
 		String user = (String) params.get(1);
 		String password = (String) params.get(2);
-		zki = new ZooKeeperInstance("accumulo", zkMasterAddress);
+		String instanceName = (String) params.get(3);
+		zki = new ZooKeeperInstance(instanceName, zkMasterAddress);
 		ConfigurationCopy conf = new ConfigurationCopy(zki.getConfiguration());
 		conf.set(Property.GENERAL_RPC_TIMEOUT, "10s"); // default 120s
 		zki.setConfiguration(conf);
