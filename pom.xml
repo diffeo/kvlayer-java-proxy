@@ -4,6 +4,9 @@
   <artifactId>kvlayer-cbor-proxy</artifactId>
   <version>0.1.0</version>
   <name>kvlayer-cbor-proxy</name>
+  <properties>
+    <accumuloVersion>1.5.2</accumuloVersion>
+  </properties>
   <build>
     <sourceDirectory>src</sourceDirectory>
     <plugins>
@@ -46,7 +49,7 @@
   	<dependency>
   		<groupId>org.apache.accumulo</groupId>
   		<artifactId>accumulo-core</artifactId>
-  		<version>1.5.2</version>
+                <version>${accumuloVersion}</version>
   	</dependency>
   </dependencies>
 </project>
