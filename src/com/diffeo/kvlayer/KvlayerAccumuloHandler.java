@@ -13,7 +13,7 @@ import java.util.Map.Entry;
 import org.apache.accumulo.core.client.AccumuloException;
 import org.apache.accumulo.core.client.AccumuloSecurityException;
 import org.apache.accumulo.core.client.BatchWriter;
-import org.apache.accumulo.core.client.BatchWriterConfig;
+//import org.apache.accumulo.core.client.BatchWriterConfig;
 import org.apache.accumulo.core.client.Connector;
 import org.apache.accumulo.core.client.IteratorSetting;
 import org.apache.accumulo.core.client.MultiTableBatchWriter;
@@ -22,7 +22,7 @@ import org.apache.accumulo.core.client.TableExistsException;
 import org.apache.accumulo.core.client.TableNotFoundException;
 import org.apache.accumulo.core.client.ZooKeeperInstance;
 import org.apache.accumulo.core.client.admin.TableOperations;
-import org.apache.accumulo.core.client.security.tokens.PasswordToken;
+//import org.apache.accumulo.core.client.security.tokens.PasswordToken;
 import org.apache.accumulo.core.conf.AccumuloConfiguration;
 import org.apache.accumulo.core.conf.ConfigurationCopy;
 import org.apache.accumulo.core.conf.Property;
@@ -89,7 +89,8 @@ public class KvlayerAccumuloHandler extends CborClientHandler implements RpcHand
 
 		public void run() {
 			try {
-				cn = zki.getConnector(user, new PasswordToken(password));
+				cn = zki.getConnector(user, password);
+				//cn = zki.getConnector(user, new PasswordToken(password));
 			} catch (AccumuloException e) {
 				logger.error("error connecting to accumulo");
 				e.printStackTrace();
@@ -204,8 +205,10 @@ public class KvlayerAccumuloHandler extends CborClientHandler implements RpcHand
 	}
 	
 	// We use the column family "" for data in our simple key-value table.
-	private static final byte[] cf = new byte[0];
-	private static final byte[] cq = new byte[0];
+	//private static final byte[] cf = new byte[0];
+	//private static final byte[] cq = new byte[0];
+	private static final Text cf = new Text();
+	private static final Text cq = new Text();
 
 	/**
 	 * Scan tables returning data.
@@ -329,15 +332,22 @@ public class KvlayerAccumuloHandler extends CborClientHandler implements RpcHand
 	 */
 	private Object put(List<Object> params) throws AccumuloException, AccumuloSecurityException, TableNotFoundException {
 		String tableName = (String) params.get(0);
-		BatchWriterConfig bwc = new BatchWriterConfig();
-		BatchWriter bw = connector.createBatchWriter(tableName, bwc);
+		//BatchWriterConfig bwc = new BatchWriterConfig();
+		BatchWriter bw = connector.createBatchWriter(
+				tableName,
+				10000000 /* bytes in batch before sending */,
+				1000 /* ms batching before sending */,
+				5 /* threads a-writing */);
+		//BatchWriter bw = connector.createBatchWriter(tableName, bwc);
 		List kvList = (List) params.get(1);
 		for (Object ob : kvList) {
 			List kv = (List) ob;
 			byte[] key = (byte[]) kv.get(0);
 			byte[] val = (byte[]) kv.get(1);
-			Mutation m = new Mutation(key);
-			m.put(cf, key, val);
+			//Mutation m = new Mutation();
+			Text rowKey = new Text(key);
+			Mutation m = new Mutation(rowKey);
+			m.put(cf, cq, new Value(val));
 			bw.addMutation(m);
 		}
 		bw.flush();
@@ -355,14 +365,19 @@ public class KvlayerAccumuloHandler extends CborClientHandler implements RpcHand
 	 */
 	private Object delete(List<Object> params) throws AccumuloException, AccumuloSecurityException, TableNotFoundException {
 		String tableName = (String) params.get(0);
-		BatchWriterConfig bwc = new BatchWriterConfig();
-		BatchWriter bw = connector.createBatchWriter(tableName, bwc);
+		//BatchWriterConfig bwc = new BatchWriterConfig();
+		//BatchWriter bw = connector.createBatchWriter(tableName, bwc);
+		BatchWriter bw = connector.createBatchWriter(
+				tableName,
+				10000000 /* bytes in batch before sending */,
+				1000 /* ms batching before sending */,
+				5 /* threads a-writing */);
 		List kList = (List) params.get(1);
 		for (Object ob : kList) {
-			byte[] key = (byte[]) ob;
+			Text key = new Text((byte[]) ob);
 			Mutation m = new Mutation(key);
 			// Use RowDeletingIterator behavior to achieve deletion.
-			m.put(cf, cq, RowDeletingIterator.DELETE_ROW_VALUE.get());
+			m.put(cf, cq, new Value(RowDeletingIterator.DELETE_ROW_VALUE.get()));
 			//m.putDelete(cf, cq);
 			bw.addMutation(m);
 		}

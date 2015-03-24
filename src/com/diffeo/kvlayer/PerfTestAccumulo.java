@@ -12,12 +12,12 @@ import java.util.Random;
 import java.util.SortedSet;
 import java.util.TreeSet;
 
-import org.apache.accumulo.core.cli.BatchWriterOpts;
-import org.apache.accumulo.core.cli.ClientOnRequiredTable;
+//import org.apache.accumulo.core.cli.BatchWriterOpts;
+//import org.apache.accumulo.core.cli.ClientOnRequiredTable;
 import org.apache.accumulo.core.client.AccumuloException;
 import org.apache.accumulo.core.client.AccumuloSecurityException;
 import org.apache.accumulo.core.client.BatchWriter;
-import org.apache.accumulo.core.client.BatchWriterConfig;
+//import org.apache.accumulo.core.client.BatchWriterConfig;
 import org.apache.accumulo.core.client.Connector;
 import org.apache.accumulo.core.client.MultiTableBatchWriter;
 import org.apache.accumulo.core.client.Scanner;
@@ -25,7 +25,7 @@ import org.apache.accumulo.core.client.TableExistsException;
 import org.apache.accumulo.core.client.TableNotFoundException;
 import org.apache.accumulo.core.client.ZooKeeperInstance;
 import org.apache.accumulo.core.client.admin.TableOperations;
-import org.apache.accumulo.core.client.security.tokens.PasswordToken;
+//import org.apache.accumulo.core.client.security.tokens.PasswordToken;
 import org.apache.accumulo.core.data.Key;
 import org.apache.accumulo.core.data.Mutation;
 import org.apache.accumulo.core.data.Range;
@@ -162,9 +162,10 @@ public class PerfTestAccumulo implements Runnable {
 		//tableName = "perftest";
 		ZooKeeperInstance zki = new ZooKeeperInstance("accumulo", zkMasterAddress);
 
-		connector = zki.getConnector(user, new PasswordToken(password));
-		BatchWriterConfig bwc = new BatchWriterConfig();
-		mtbw = connector.createMultiTableBatchWriter(bwc);
+		//connector = zki.getConnector(user, new PasswordToken(password));
+		connector = zki.getConnector(user, password);
+		//BatchWriterConfig bwc = new BatchWriterConfig();
+		mtbw = connector.createMultiTableBatchWriter(10000000, 1000, 5);
 		/*
 			ClientOnRequiredTable opts = new ClientOnRequiredTable();
 			BatchWriterOpts bwOpts = new BatchWriterOpts();
@@ -215,15 +216,18 @@ public class PerfTestAccumulo implements Runnable {
 		}
 	}
 	
-	byte[] cf = new byte[]{'d'};
+	//byte[] cf = new byte[]{'d'};
+	Text cf = new Text("d");
 	
 	public void testWriting() throws Exception {
 		connect();
 		BatchWriter bw = mtbw.getBatchWriter(tableName);
 		Random rand = new Random();
-		byte[] value = new byte[itemSize];
-		rand.nextBytes(value);
-		byte[] empty = new byte[]{};
+		byte[] valueb = new byte[itemSize];
+		rand.nextBytes(valueb);
+		Value value = new Value(valueb);
+		//byte[] empty = new byte[]{};
+		Text empty = new Text();
 		
 		// do writing
 		for (int batchi = 0; batchi < numBatches; batchi++) {
@@ -231,7 +235,7 @@ public class PerfTestAccumulo implements Runnable {
 				byte[] key = new byte[8];
 				rand.nextBytes(key);
 				keys.add(key);
-				Mutation m = new Mutation(key);
+				Mutation m = new Mutation(new Text(key));
 				m.put(cf, empty, value);
 				bw.addMutation(m);
 			}
