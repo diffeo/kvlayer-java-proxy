@@ -17,6 +17,7 @@ import org.apache.accumulo.core.client.BatchWriterConfig;
 import org.apache.accumulo.core.client.Connector;
 import org.apache.accumulo.core.client.IteratorSetting;
 import org.apache.accumulo.core.client.MultiTableBatchWriter;
+import org.apache.accumulo.core.client.MutationsRejectedException;
 import org.apache.accumulo.core.client.Scanner;
 import org.apache.accumulo.core.client.TableExistsException;
 import org.apache.accumulo.core.client.TableNotFoundException;
@@ -32,7 +33,7 @@ import org.apache.accumulo.core.data.Range;
 import org.apache.accumulo.core.data.Value;
 import org.apache.accumulo.core.iterators.IteratorUtil;
 import org.apache.accumulo.core.iterators.SortedKeyValueIterator;
-import org.apache.accumulo.core.iterators.user.RowDeletingIterator;
+import org.apache.accumulo.core.iterators.user.SummingCombiner;
 import org.apache.accumulo.core.security.Authorizations;
 import org.apache.hadoop.io.Text;
 import org.apache.log4j.LogManager;
@@ -68,6 +69,7 @@ public class KvlayerAccumuloHandler extends CborClientHandler implements RpcHand
 	Connector connector = null;
 	// What was set in "setup_namespace"
 	HashMap<String, Object> tableOpts = new HashMap<String, Object>();
+	HashMap<String, String> valueTypes = new HashMap<String, String>();
 
 	/**
 	 * Because ZooKeeperInstance.getConnector() can hang forever, run it in a thread that we can kill when we decide to timeout.
@@ -114,9 +116,12 @@ public class KvlayerAccumuloHandler extends CborClientHandler implements RpcHand
 		ConfigurationCopy conf = new ConfigurationCopy(zki.getConfiguration());
 		conf.set(Property.GENERAL_RPC_TIMEOUT, "10s"); // default 120s
 		zki.setConfiguration(conf);
+		/*
+		// noisy debug of default and modified configuration
 		for (Entry<String, String> x : conf) {
 			logger.debug("conf: " + x.getKey() + " : " + x.getValue());
 		}
+		*/
 
 		// this can hang forever. Put in a thread that can be killed.
 		//connector = zki.getConnector(user, new PasswordToken(password));
@@ -185,7 +190,10 @@ public class KvlayerAccumuloHandler extends CborClientHandler implements RpcHand
 		}
 		// row data operations:
 		if (method.equals("put")) {
-			return put(params);
+			return put(params, true);
+		}
+		if (method.equals("increment")) {
+			return increment(params);
 		}
 		if (method.equals("scan")) {
 			return scan(params);
@@ -327,22 +335,46 @@ public class KvlayerAccumuloHandler extends CborClientHandler implements RpcHand
 	 * @throws AccumuloSecurityException
 	 * @throws TableNotFoundException
 	 */
-	private Object put(List<Object> params) throws AccumuloException, AccumuloSecurityException, TableNotFoundException {
+	private Object put(List<Object> params, boolean deleteCounterFirst) throws AccumuloException, AccumuloSecurityException, TableNotFoundException {
 		String tableName = (String) params.get(0);
+		List kvList = (List) params.get(1);
+		if (deleteCounterFirst) {
+			String valueType = valueTypes.get(tableName);
+			if (valueType != null && valueType.equals("COUNTER")) {
+				putDeletesForKvList(tableName, kvList);
+			}
+		}
 		BatchWriterConfig bwc = new BatchWriterConfig();
 		BatchWriter bw = connector.createBatchWriter(tableName, bwc);
-		List kvList = (List) params.get(1);
 		for (Object ob : kvList) {
 			List kv = (List) ob;
 			byte[] key = (byte[]) kv.get(0);
 			byte[] val = (byte[]) kv.get(1);
 			Mutation m = new Mutation(key);
-			m.put(cf, key, val);
+			m.put(cf, cq, val);
 			bw.addMutation(m);
 		}
 		bw.flush();
 		bw.close();
 		return true;
+	}
+
+	private void putDeletesForKvList(String tableName, List kvList) throws TableNotFoundException, MutationsRejectedException {
+		BatchWriterConfig bwc = new BatchWriterConfig();
+		BatchWriter bw = connector.createBatchWriter(tableName, bwc);
+		for (Object ob : kvList) {
+			List kv = (List) ob;
+			byte[] key = (byte[]) kv.get(0);
+			Mutation m = new Mutation(key);
+			m.putDelete(cf, cq);
+			bw.addMutation(m);
+		}
+		bw.flush();
+		bw.close();
+	}
+
+	private Object increment(List<Object> params) throws AccumuloException, AccumuloSecurityException, TableNotFoundException {
+		return put(params, false);
 	}
 
 	/**
@@ -361,9 +393,7 @@ public class KvlayerAccumuloHandler extends CborClientHandler implements RpcHand
 		for (Object ob : kList) {
 			byte[] key = (byte[]) ob;
 			Mutation m = new Mutation(key);
-			// Use RowDeletingIterator behavior to achieve deletion.
-			m.put(cf, cq, RowDeletingIterator.DELETE_ROW_VALUE.get());
-			//m.putDelete(cf, cq);
+			m.putDelete(cf, cq);
 			bw.addMutation(m);
 		}
 		bw.flush();
@@ -383,7 +413,7 @@ public class KvlayerAccumuloHandler extends CborClientHandler implements RpcHand
 		String tableName = (String)params.get(0);
 		TableOperations tops = connector.tableOperations();
 		deleteTable(tops, tableName);
-		createTable(tops, tableName);
+		createTable(tops, tableName, valueTypes.get(tableName));
 		return true;
 	}
 	
@@ -414,20 +444,34 @@ public class KvlayerAccumuloHandler extends CborClientHandler implements RpcHand
 		}
 	}
 	
-	private void createTable(TableOperations tops, String tableName) throws AccumuloException, AccumuloSecurityException, TableNotFoundException {
+	private void createTable(TableOperations tops, String tableName, String typeName) throws AccumuloException, AccumuloSecurityException, TableNotFoundException {
 		if (tops.exists(tableName)) {
+			logger.debug("createTable " + tableName + " - " + typeName + " -- exists");
 			return;
 		}
 		try {
 			tops.create(tableName);
 		} catch (TableExistsException tee) {
 			// okay.
+			logger.debug("createTable " + tableName + " - " + typeName + " -- create collision");
 			return;
 		}
+		logger.debug("createTable " + tableName + " - " + typeName);
+
 		tops.setProperty(tableName, "table.bloom.enabled", "true");
-		EnumSet<IteratorUtil.IteratorScope> scopes = EnumSet.of(IteratorUtil.IteratorScope.scan, IteratorUtil.IteratorScope.minc, IteratorUtil.IteratorScope.majc);
-		IteratorSetting iters = new IteratorSetting(10, (Class<? extends SortedKeyValueIterator<Key, Value>>) RowDeletingIterator.class);
-		tops.attachIterator(tableName, iters, scopes);
+		tops.setProperty(tableName, "table.cache.block.enable", "true");
+		if (typeName != null && typeName.equals("COUNTER")) {
+			logger.debug("setting up COUNTER table " + tableName);
+			EnumSet<IteratorUtil.IteratorScope> scopes = EnumSet.of(
+					IteratorUtil.IteratorScope.scan,
+					IteratorUtil.IteratorScope.minc,
+					IteratorUtil.IteratorScope.majc);
+			IteratorSetting iters = new IteratorSetting(10, (Class<? extends SortedKeyValueIterator<Key, Value>>) SummingCombiner.class);
+			iters.addOption("all", "true");
+			iters.addOption("columns", "");
+			iters.addOption("type", "FIXEDLEN");
+			tops.attachIterator(tableName, iters, scopes);
+		}
 	}
 	
 	/**
@@ -442,10 +486,21 @@ public class KvlayerAccumuloHandler extends CborClientHandler implements RpcHand
 	 */
 	private Object setupNamespace(List<Object> params) throws AccumuloException, AccumuloSecurityException, TableExistsException, TableNotFoundException {
 		Map tableSetup = (Map)params.get(0);
+		Map tableValueSetup = null;
+		if (params.size() > 1) {
+			tableValueSetup = (Map)params.get(1);
+		}
 		TableOperations tops = connector.tableOperations();
 		for (Object okey : tableSetup.keySet()) {
 			String key = (String)okey;
-			createTable(tops, key);
+			String typeName = null;
+			if (tableValueSetup != null) {
+				typeName = (String)tableValueSetup.get(key);
+				if (typeName != null) {
+					valueTypes.put(key, typeName);
+				}
+			}
+			createTable(tops, key, typeName);
 			tableOpts.put(key, tableSetup.get(key));
 		}
 		return true;
