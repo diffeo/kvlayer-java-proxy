@@ -215,12 +215,15 @@ public class KvlayerAccumuloHandler extends CborClientHandler implements RpcHand
 	private static final byte[] cf = new byte[0];
 	private static final byte[] cq = new byte[0];
 
+	int scanLimitItems = 500;
+	long scanLimitBytes = 10000000;
+
 	/**
 	 * Scan tables returning data.
 	 * params should be first the table name to scan, then a list of low-high pairs of ranges to scan.
 	 * Range low or high may be null to indicate -Inf/+Inf
 	 * @param params [tableName, [[range low, range high], ...] ]
-	 * @return [[key, value], ...]
+	 * @return [[key, value], ...] OR {'out':[...], 'next':[...]}
 	 * @throws TableNotFoundException
 	 */
 	private Object scan(List<Object> params) throws TableNotFoundException {
@@ -229,12 +232,18 @@ public class KvlayerAccumuloHandler extends CborClientHandler implements RpcHand
 		Scanner sc = connector.createScanner(tableName, new Authorizations());
 		sc.fetchColumnFamily(new Text(cf));
 		List rangeList = (List)params.get(1);
-		// TODO: it would be nice to start streaming back results as we get them rather than batching everything in the proxy.
 		ArrayList<Object[]> out = new ArrayList<Object[]>();
-		for (Object rawrange : rangeList) {
-			List rangel = (List) rawrange;
+		int outCount = 0;
+		long outBytes = 0;
+		// TODO: lots of shared structure with scanKeys() refactor to merge?
+		for (int rangei = 0; rangei < rangeList.size(); rangei++) {
+			List rangel = (List) rangeList.get(rangei);
 			byte[] startKey = (byte[]) rangel.get(0);
 			byte[] endKey = (byte[]) rangel.get(1);
+			boolean startInclusive = true;
+			if ((rangel.size() >= 3) && (rangel.get(2).equals("gt"))) {
+				startInclusive = false;
+			}
 			//logger.info("range: " + startKey + " - " + endKey);
 			Text skt = null;
 			if (startKey != null) {
@@ -244,12 +253,32 @@ public class KvlayerAccumuloHandler extends CborClientHandler implements RpcHand
 			if (endKey != null) {
 				ekt = new Text(endKey);
 			}
-			Range sr = new Range(skt, true, ekt, true);
+			Range sr = new Range(skt, startInclusive, ekt, true);
 			sc.setRange(sr);
 			for (Map.Entry kv : sc) {
 				byte[] key = ((Key)kv.getKey()).getRow().getBytes();
 				byte[] val = ((Value)kv.getValue()).get();
 				out.add(new Object[]{key, val});
+				outCount++;
+				outBytes += key.length + val.length;
+				if ((outCount >= scanLimitItems) || (outBytes >= scanLimitBytes)) {
+					Map<String, Object> mout = new HashMap<String,Object>();
+					mout.put("out", out);
+					ArrayList<Object> nextCommand = new ArrayList<Object>();
+					nextCommand.add(tableName);
+					ArrayList<Object> newRanges = new ArrayList<Object>();
+					ArrayList<Object> currentRange = new ArrayList<Object>();
+					currentRange.add(key);
+					currentRange.add(endKey);
+					currentRange.add("gt");
+					newRanges.add(currentRange);
+					for (int xi = rangei+1; xi < rangeList.size(); xi++) {
+						newRanges.add(rangeList.get(xi));
+					}
+					nextCommand.add(newRanges);
+					mout.put("next", nextCommand);
+					return mout;
+				}
 			}
 		}
 		//logger.info("found " + out.size() + " things scanned");
@@ -272,12 +301,18 @@ public class KvlayerAccumuloHandler extends CborClientHandler implements RpcHand
 		Scanner sc = connector.createScanner(tableName, new Authorizations());
 		sc.fetchColumnFamily(new Text(cf));
 		List rangeList = (List)params.get(1);
-		// TODO: it would be nice to start streaming back results as we get them rather than batching everything in the proxy.
 		ArrayList<Object> out = new ArrayList<Object>();
-		for (Object rawrange : rangeList) {
-			List rangel = (List) rawrange;
+		int outCount = 0;
+		long outBytes = 0;
+		// TODO: lots of shared structure with scan() refactor to merge?
+		for (int rangei = 0; rangei < rangeList.size(); rangei++) {
+			List rangel = (List) rangeList.get(rangei);
 			byte[] startKey = (byte[]) rangel.get(0);
 			byte[] endKey = (byte[]) rangel.get(1);
+			boolean startInclusive = true;
+			if ((rangel.size() >= 3) && (rangel.get(2).equals("gt"))) {
+				startInclusive = false;
+			}
 			//logger.info("range: " + startKey + " - " + endKey);
 			Text skt = null;
 			if (startKey != null) {
@@ -287,11 +322,31 @@ public class KvlayerAccumuloHandler extends CborClientHandler implements RpcHand
 			if (endKey != null) {
 				ekt = new Text(endKey);
 			}
-			Range sr = new Range(skt, true, ekt, true);
+			Range sr = new Range(skt, startInclusive, ekt, true);
 			sc.setRange(sr);
 			for (Map.Entry kv : sc) {
 				byte[] key = ((Key)kv.getKey()).getRow().getBytes();
 				out.add(key);
+				outCount++;
+				outBytes += key.length;
+				if ((outCount >= scanLimitItems) || (outBytes >= scanLimitBytes)) {
+					Map<String, Object> mout = new HashMap<String,Object>();
+					mout.put("out", out);
+					ArrayList<Object> nextCommand = new ArrayList<Object>();
+					nextCommand.add(tableName);
+					ArrayList<Object> newRanges = new ArrayList<Object>();
+					ArrayList<Object> currentRange = new ArrayList<Object>();
+					currentRange.add(key);
+					currentRange.add(endKey);
+					currentRange.add("gt");
+					newRanges.add(currentRange);
+					for (int xi = rangei+1; xi < rangeList.size(); xi++) {
+						newRanges.add(rangeList.get(xi));
+					}
+					nextCommand.add(newRanges);
+					mout.put("next", nextCommand);
+					return mout;
+				}
 			}
 		}
 		//logger.info("found " + out.size() + " things scanned");
